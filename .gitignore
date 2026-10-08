@@ -1,0 +1,17 @@
+# Node / Frontend
+node_modules/
+.next/
+out/
+build/
+.env*.local
+
+# Python / Backend
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Logs
+*.log
