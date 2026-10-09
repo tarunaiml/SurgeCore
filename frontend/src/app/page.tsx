@@ -30,7 +30,7 @@ export default function Dashboard() {
   const [history, setHistory] = useState<any[]>([]);
   const [prediction, setPrediction] = useState<any>(null);
   const [logs, setLogs] = useState<{time: string, msg: string}[]>([]);
-  const [scenario, setScenario] = useState<string>("NORMAL");
+  const [scenario, setScenario] = useState<string>("DATABASE_BOTTLENECK");
   const [modelInfo, setModelInfo] = useState<any>(null);
 
   // Autonomy State Machine
@@ -45,7 +45,8 @@ export default function Dashboard() {
     normals: 0,
     verifyTicks: 0,
     beforeMetrics: null as Metrics | null,
-    currentDecision: null as any
+    currentDecision: null as any,
+    resetId: 0
   });
 
   const addLog = (msg: string) => {
@@ -81,15 +82,15 @@ export default function Dashboard() {
 
     // 2. Candidate Actions Evaluation
     const actions = [
-      { id: 'ENABLE_CACHE', name: 'Enable Cache', db_imp: 0.45, resp_imp: 0.35, cpu_imp: 0.15, impact: 0.1, cost: 0.2 },
-      { id: 'OPTIMIZE_DATABASE_QUERIES', name: 'Optimize DB Queries', db_imp: 0.30, resp_imp: 0.20, cpu_imp: 0.05, impact: 0.2, cost: 0.4 },
-      { id: 'REDUCE_PAGINATION', name: 'Reduce Pagination', db_imp: 0.20, resp_imp: 0.15, cpu_imp: 0.10, impact: 0.4, cost: 0.1 },
-      { id: 'DISABLE_HEAVY_COMPONENTS', name: 'Disable Heavy Components', db_imp: 0.05, resp_imp: 0.10, cpu_imp: 0.40, impact: 0.8, cost: 0.1 }
+      { id: 'ENABLE_CACHE', name: 'Enable Cache', db_imp: 0.20, resp_imp: 0.30, cpu_imp: 0.10, traffic_imp: 0.50, impact: 0.1, cost: 0.2 },
+      { id: 'OPTIMIZE_DATABASE_QUERIES', name: 'Optimize DB Queries', db_imp: 0.60, resp_imp: 0.20, cpu_imp: 0.05, traffic_imp: 0.0, impact: 0.2, cost: 0.4 },
+      { id: 'REDUCE_PAGINATION', name: 'Reduce Pagination', db_imp: 0.20, resp_imp: 0.15, cpu_imp: 0.10, traffic_imp: 0.1, impact: 0.3, cost: 0.1 },
+      { id: 'DISABLE_HEAVY_COMPONENTS', name: 'Disable Heavy Components', db_imp: 0.05, resp_imp: 0.10, cpu_imp: 0.60, traffic_imp: 0.0, impact: 0.4, cost: 0.1 }
     ];
 
     const candidates = actions.map(act => {
       // Gain is weighted by what the bottleneck actually is
-      const gain = (act.db_imp * bN.DATABASE) + (act.cpu_imp * bN.CPU) + (act.resp_imp * 0.4);
+      const gain = (act.db_imp * bN.DATABASE) + (act.cpu_imp * bN.CPU) + ((act.traffic_imp || 0) * bN.TRAFFIC) + (act.resp_imp * 0.4);
       const score = gain - (act.impact * 0.3) - (act.cost * 0.1);
       return { ...act, gain, score };
     }).sort((a,b) => b.score - a.score);
@@ -132,12 +133,14 @@ export default function Dashboard() {
           next.db_query_time += 20;
           next.response_time += 40;
         } else if (scenario === "DATABASE_BOTTLENECK") {
-          next.db_query_time += 50;
-          next.response_time += 50;
-          next.cpu_utilization += 1;
+          next.db_query_time += 150;
+          next.response_time += 100;
+          next.cpu_utilization += 2;
+          next.traffic_volume += 10;
         } else if (scenario === "CPU_PRESSURE") {
-          next.cpu_utilization += 6;
-          next.response_time += 25;
+          next.cpu_utilization += 15;
+          next.response_time += 80;
+          next.traffic_volume += 10;
         } else if (scenario === "NORMAL") {
           next.traffic_volume += (100 - next.traffic_volume) * 0.1;
           next.active_users += (500 - next.active_users) * 0.1;
@@ -234,9 +237,12 @@ export default function Dashboard() {
 
         setHistory(prev => [...prev, { time: new Date().toLocaleTimeString(), ...metrics, risk: riskScore }].slice(-20));
 
+        // UI DIAGNOSTIC LOG (TEMPORARY)
+        addLog(`[DIAG] Pred: ${predData.prediction}, Prob: ${(targetProb*100).toFixed(0)}%, Warns: ${stateRef.current.warnings}, Phase: ${stateRef.current.phase}, Opt: ${optimization}`);
+
         // Autonomy Logic - Phase: OBSERVING
         if (stateRef.current.phase === 'OBSERVING') {
-          if (predData.prediction !== "NORMAL" && targetProb >= 0.80 && optimization === "NONE") {
+          if (predData.prediction !== "NORMAL" && targetProb >= 0.60 && optimization === "NONE") {
             stateRef.current.warnings += 1;
             if (stateRef.current.warnings >= 3) {
               addLog(`Stability Guard: 3 anomalies detected. Engaging Optimizer.`);
@@ -249,13 +255,16 @@ export default function Dashboard() {
               stateRef.current.currentDecision = newDecision;
               stateRef.current.beforeMetrics = { ...metrics };
               
+              const currentResetId = stateRef.current.resetId;
               setTimeout(() => {
+                if (stateRef.current.resetId !== currentResetId) return;
                 stateRef.current.phase = 'OPTIMIZING';
                 setPhase('OPTIMIZING');
                 setOptimization(newDecision.selected.id);
                 addLog(`ACTION SELECTED: ${newDecision.selected.name}`);
                 
                 setTimeout(() => {
+                  if (stateRef.current.resetId !== currentResetId) return;
                   stateRef.current.phase = 'VERIFYING';
                   setPhase('VERIFYING');
                   stateRef.current.verifyTicks = 3;
@@ -268,14 +277,16 @@ export default function Dashboard() {
           }
 
           // Recovery Logic
-          if (predData.prediction === "NORMAL" && targetProb >= 0.80 && optimization !== "NONE") {
+          if (predData.prediction === "NORMAL" && predData.probability >= 0.60 && optimization !== "NONE") {
             stateRef.current.normals += 1;
             if (stateRef.current.normals >= 5) {
               addLog("Stability Guard: 5 normal ticks. Recovering...");
               stateRef.current.phase = 'RECOVERING';
               setPhase('RECOVERING');
               
+              const currentResetId = stateRef.current.resetId;
               setTimeout(() => {
+                if (stateRef.current.resetId !== currentResetId) return;
                 setOptimization("NONE");
                 setDecision(null);
                 stateRef.current.phase = 'OBSERVING';
@@ -534,11 +545,32 @@ export default function Dashboard() {
                 CPU Pressure
               </button>
               <button onClick={() => {
-                setScenarioAndLog("NORMAL");
+                setScenario("NORMAL");
                 setOptimization("NONE");
                 setDecision(null);
                 setPhase("OBSERVING");
-                stateRef.current = { phase: 'OBSERVING', warnings: 0, normals: 0, verifyTicks: 0, beforeMetrics: null, currentDecision: null };
+                setPrediction(null);
+                setHistory([]);
+                setOptHistory([]);
+                setMetrics({
+                  traffic_volume: 100,
+                  response_time: 200,
+                  cpu_utilization: 30,
+                  memory_utilization: 40,
+                  db_query_time: 50,
+                  active_users: 500,
+                  system_load: 0.5,
+                });
+                stateRef.current = { 
+                  phase: 'OBSERVING', 
+                  warnings: 0, 
+                  normals: 0, 
+                  verifyTicks: 0, 
+                  beforeMetrics: null, 
+                  currentDecision: null, 
+                  resetId: (stateRef.current.resetId || 0) + 1 
+                };
+                addLog("SYSTEM RESET");
               }} className="px-4 py-2 rounded-lg text-sm font-medium border bg-slate-100 hover:bg-slate-200 text-slate-700 mt-2 text-center flex justify-center items-center gap-2">
                 <RefreshCw size={14} /> Force Reset System
               </button>
